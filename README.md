@@ -19,7 +19,4 @@ docker build -t YOURIMG:TAG .
 
 4、use grafana to show the data:
 
-![grafana](img/grafana.png)
-
-
-![influxdb](img/influxdb.png) 
+![grafana](img/屏幕快照%202019-02-24%2015.13.44.png)
