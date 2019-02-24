@@ -1,0 +1,34 @@
+#FROM python:3
+FROM centos
+
+USER root
+ARG dockerGid=999
+ADD libltdl.so.7 /usr/lib/x86_64-linux-gnu/
+
+#安装linux工具
+run rpm --rebuilddb  && \
+yum install -y git && \
+yum install -y tar && \
+yum install -y bzip2 && \
+yum install -y make && \
+yum install -y which && \
+yum install -y gcc gcc-c++ && \
+yum install -y vim && \
+yum install -y sudo && \
+yum install -y net-tools && \
+yum install -y krb5-devel && \
+yum install -y graphviz && \
+yum install -y strace && \
+yum install -y 'graphviz*' && \
+yum install -y docker-client
+
+RUN yum -y install wget
+
+RUN cd /opt && wget https://mirrors.tuna.tsinghua.edu.cn/anaconda/archive/Anaconda3-5.2.0-Linux-x86_64.sh
+RUN sh /opt/Anaconda3-5.2.0-Linux-x86_64.sh -b -f -p /opt/conda3   && rm -rf /opt/Anaconda3-5.2.0-Linux-x86_64.sh
+
+RUN /opt/conda3/bin/pip install -i https://pypi.tuna.tsinghua.edu.cn/simple requests
+
+ADD gpu.py /gpu.py
+#ENTRYPOINT python3 /gpu.py
+ENTRYPOINT /opt/conda3/bin/python /gpu.py

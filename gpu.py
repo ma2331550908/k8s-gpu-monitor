@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
+'''
+curl -GET 'http://influxdb IP:端口/query?pretty=true' --data-urlencode "db=gpu_process" --data-urlencode "q=select * from node_gpu"
 
+curl -POST http://influxdb IP:端口/query --data-urlencode "q=CREATE DATABASE gpu_process"
+'''
 import subprocess
 import io
 import csv
@@ -104,7 +108,6 @@ def main():
                                   outputfmt={'gpu_uuid': lambda s: s.lstrip()},
                                   skipheader=True)
     # print("un:")
-    # print(unitstats)
     unitprocstats = commandtodictdict(['nvidia-smi', '--format=csv'],
                                       ['pid', 'process_name', 'gpu_uuid', 'used_memory'],
                                       keycols=['pid', 'gpu_uuid'],
@@ -115,6 +118,7 @@ def main():
     # map gpu_uuids to short ids in unit info rename columns
     shortunitids = {gpu_uuid: "{0}".format(shortid) for gpu_uuid, shortid in
                     zip(unitstats.keys(), range(len(unitstats)))}
+    #print(shortunitids)
     # print("short")
     # print(shortunitids)
 
@@ -124,6 +128,7 @@ def main():
     unitstats = {shortunitids[gpu_uuid]: renamekeys(stats, colnames) for gpu_uuid, stats in unitstats.items()}
     # print(unitstats)
     # node level monitor
+    node_name = os.getenv("NODE_NAME")
     for k in unitstats.keys():
         mem_total = int(re.sub('\D',"", unitstats[k]['memory.total']))
         mem_used = int(re.sub('\D',"",unitstats[k]['memory.used']))
@@ -166,67 +171,89 @@ def main():
     # (everything below a bit janky in terms of argument expectations and generalization)
     dockerall = {container: {**dockerps[container], **dockerstats[container]} for container in dockerstats.keys()}
     someunitsactive = False
-    # print(displayfmt.format(**{col: col for col in displaycols.keys()}))
     for container, dockerinfo in dockerall.items():
         # very particular incantation needed here for top options to function correctly:
         # https://www.projectatomic.io/blog/2016/01/understanding-docker-top-and-ps/
         pids = command(['docker', 'top', container, '-eo', 'pid']).split('\n')[1:-1]  # obviously could be a bit brittle
-        # pse = commandtodictdict(['docker', 'top',container,'-eo'],
-        #                   ['pid', 'time', 'cmd'],
-        #                   keycols=['pid'],
-        #                   queryargfmt="'{0}'",
-        #                   colargfmt="{,{0}}",
-        #                   outputfmt={'pid': lambda s: s[1:]})
-        #                   # colargfmt="pid,time,cmd",
-        #                   # outputfmt={'pid': lambda s: s[1:]})
-        # print("pssss")
-        # print(pse)
         containerunitstats = {(proc, unit): stat for (proc, unit), stat in unitprocstats.items() if proc in pids}
-        # print(unitprocstats)
-        if containerunitstats:
+        tagflag = True
+        host = node_name
+        namespace = "-"
+        podname = "-"
+        user_name = "-"
+        labels = getContainer(container)['Config']['Labels'];
+        mlgpu = "False"
+        if('mlgpu' in labels.keys()):
+            mlgpu = labels['mlgpu']
+        if mlgpu == 'mlgpu':
             someunitsactive = True
-            basedisplaystr = basedisplayfmt.format(Container=container, **dockerinfo)
-            # print(basedisplaystr)
             for (pid, gpu_uuid), stats in containerunitstats.items():
-                # print(unitstats[gpu_uuid])
-                # print("pid="+pid+";gpu_uuid="+gpu_uuid+";"+"used_memery=")
-                # print(optdisplayfmt.rjust(99).format(pid=pid, gpu_uuid=gpu_uuid, **stats, **unitstats[gpu_uuid]))
-                # print("used_memory="+stats['used_memory'])
-                # print("process_name="+stats['process_name'])
-                # print("containerid="+container)
-                # print(stats)
-                # print(dockerinfo['MemUsage'])
-                host = node_name
-                podname = "testpod"
-                namespace = "10000000-name"
+                tagflag = False
                 labels = getContainer(container)['Config']['Labels'];
-                # print(type(labels))
-                # print(getContainer(container)['Config']['Labels'])
-                # labels = json.loads(str(getContainer(container)['Config']['Labels']))
                 if('io.kubernetes.pod.name' in labels.keys()):
                     podname = labels['io.kubernetes.pod.name']
                     namespace = labels['io.kubernetes.pod.namespace']
+                    if "turing-gpu-notebook-" in podname:
+                        user_name = podname.split("turing-gpu-notebook-")[1].rsplit("-",2)[0]
+                    else:
+                        user_name = podname.split("-")[1]
+                gpu_id = gpu_uuid
+                containerid = container
                 pid = pid
-                gpu_uuid = gpu_uuid
-                # user_memory = stats['used_gpu']a
-                # print(filter(str.isdigit,stats['used_memory']))
-                #
-                # unitstats = json.loads(unitstats)
-                # print(type(unitstats))
-                # data = "process,host=test,pod=".join(podname).join(",").join().join(" process_name=").join()
-                data = ""
-                data = '%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s' % ('pod_gpu,host=', host,',namespace=', namespace,',gpu=',gpu_uuid,',containerid=',container,',pod=',podname,',pid=',pid,
-                    " procressname=\"",stats['process_name'].replace(" ",""),
-                     "\",node=\"",node_name,
-                     "\",gid=",gpu_uuid,
-                    ",used_gpu=",re.sub("\D","",stats['used_memory']))
+                procressname = stats['process_name'].replace(" ","")
+                used_memory = re.sub("\D","",stats['used_memory'])
+                gpu_util = re.sub("\D", "", unitstats[gpu_uuid].get('used_gpu'))
+                data = '%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s' % (
+                    'pod_gpu,host=', host, ',namespace=', namespace, ',gpu_id=', gpu_id, ',containerid=',
+                    containerid, ',pid_t=', pid, ',gpu_util_t=', gpu_util, ',user_name_t=', user_name,
+                    " procressname=\"", procressname,
+                    "\",podname=\"", podname,
+                    "\",pid=\"", pid,
+                    "\",gpu_id_v=\"", gpu_id,
+                    "\",node=\"", node_name,
+                    "\",user_name=\"", user_name,
+                    "\",gpu_util=", gpu_util,
+                    ",used_memory=", used_memory)
                 print(data)
-                response = requests.post(posturl,data=data)
+                response = requests.post(posturl, data=data)
                 print(response.status_code)
-                # print(response.headers)
+            if tagflag:
+                p=os.popen("docker exec -i "+container+" nvidia-smi -L |cut -d '(' -f2 |cut -d ')' -f1|cut -d ' ' -f2")
+                no_used_gpu_uuid=p.read()
+                p.close()
+                no_used_gpu_uuid_list = str(no_used_gpu_uuid).split()
+                for gpu_i in range (0,len(no_used_gpu_uuid_list)):
+                    gpu_id = shortunitids.get(no_used_gpu_uuid_list[gpu_i])
+                    if ('io.kubernetes.pod.name' in labels.keys()):
+                        podname = labels['io.kubernetes.pod.name']
+                        namespace = labels['io.kubernetes.pod.namespace']
+                        if "turing-gpu-notebook-" in podname:
+                            user_name = podname.split("turing-gpu-notebook-")[1].rsplit("-", 2)[0]
+                        else:
+                            user_name = podname.split("-")[1]
+                    containerid = container
+                    pid = "-"
+                    procressname = "-"
+                    node_name = host
+                    gpu_util = 0
+                    used_memory = 0
+                    data = '%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s' % (
+                        'pod_gpu,host=', host, ',namespace=', namespace, ',gpu_id=', gpu_id, ',containerid=',
+                        containerid, ',pid_t=', pid, ',gpu_util_t=', gpu_util,',user_name_t=',user_name,
+                    " procressname=\"", procressname,
+                    "\",podname=\"", podname,
+                    "\",pid=\"", pid,
+                    "\",gpu_id_v=\"",gpu_id,
+                    "\",node=\"", node_name,
+                    "\",user_name=\"", user_name,
+                    "\",gpu_util=", gpu_util,
+                    ",used_memory=", used_memory)
+                    print(data)
+                    response = requests.post(posturl, data=data)
+                    print(response.status_code)
+
     if not someunitsactive:
         print("\n\t\t no gpu units being used by docker containers ")
-
 
 if __name__ == '__main__':
     # check for existence of docker and nvidia-smi commands
